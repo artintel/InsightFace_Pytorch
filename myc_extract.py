@@ -7,13 +7,8 @@
 @作者    :Mayc
 @版本    :0.1
 '''
-import pdb
 from config import get_config
-import argparse
 from myc_Learner import face_learner
-from data.data_pipe import get_val_pair
-from torchvision import transforms as trans
-
 conf = get_config(training=False)
 learner = face_learner(conf, inference=True)
 learner.load_state(conf, 'final.pth', model_only=True, from_save_folder=True)

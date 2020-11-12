@@ -1,33 +1,13 @@
-from data.data_pipe import de_preprocess, get_train_loader, get_val_data
 from model import Backbone, Arcface, MobileFaceNet, Am_softmax, l2_norm
 import torch
-import torch.nn as nn
-from torch import optim
 import numpy as np
 from tqdm import tqdm
-from tensorboardX import SummaryWriter
 from matplotlib import pyplot as plt
 
 plt.switch_backend('agg')
 from utils import get_time, gen_plot, hflip_batch, separate_bn_paras
-from PIL import Image
 from torchvision import transforms as trans
 import math
-import bcolz
-
-
-def evaluation(embeddings, actual_issame, nrof_folds=10, pca=0):
-    # Calculate evaluation metrics
-    thresholds = np.arange(0, 4, 0.01)
-    embeddings1 = embeddings[0::2]
-    embeddings2 = embeddings[1::2]
-    tpr, fpr, accuracy, best_thresholds = calculate_roc(thresholds, embeddings1, embeddings2,
-                                                        np.asarray(actual_issame), nrof_folds=nrof_folds, pca=pca)
-    #     thresholds = np.arange(0, 4, 0.001)
-    #     val, val_std, far = calculate_val(thresholds, embeddings1, embeddings2,
-    #                                       np.asarray(actual_issame), 1e-3, nrof_folds=nrof_folds)
-    #     return tpr, fpr, accuracy, best_thresholds, val, val_std, far
-    return tpr, fpr, accuracy, best_thresholds
 
 
 class face_learner(object):
