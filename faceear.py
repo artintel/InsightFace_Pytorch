@@ -1,26 +1,11 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
 import os
-import time
 import tensorflow as tf
 import numpy as np
-
-from PIL import Image
-
-from sklearn.decomposition import PCA
-
 from nets.getembd_stnew import get_embd_st_face, get_embd_st_ear
-
-from sklearn import metrics
 from util.img_inputmt_stval import ImageReader
 from util.input_arguments import arguments_st_eval
-
-from sklearn.model_selection import KFold
-from scipy import interpolate
-from scipy.optimize import brentq
-
-import math
-import matplotlib.pyplot as plt
 import copy
 import sys
 
@@ -28,18 +13,17 @@ sys.path.append("/usr/local/MATLAB/R2017b/extern/engines/python/build/lib.linux-
 import matlab.engine
 
 eng = matlab.engine.start_matlab()
-
-import matplotlib
 from sklearn.linear_model import Lasso
 
-import math
+slim = tf.contrib.slim
 
+IMG_MEAN = np.array((104.00698793, 116.66876762, 122.67891434), dtype=np.float32)
 
 def ISRE(A, y, x):
     y = np.transpose([y])
 
     sce_list = []
-    rootpath = '/home/tangxq/NDDR-CNN-net/datasets/er_train_pad/'
+    rootpath = 'er_train_pad/'
     list = os.listdir(rootpath)
     t = 0
     # x=d[0:553,:]
@@ -49,12 +33,7 @@ def ISRE(A, y, x):
         list1 = os.listdir(path)
         dict_num = len(list1)
         x_temp = x[t:t + dict_num, :]
-
-        '''A_temp =A[:,t:t+dict_num]          
-        Ax = np.dot(A_temp,x_temp)
-        isre = y-Ax
-        sce = np.linalg.norm(isre, ord=2)'''
-        sce = np.linalg.norm(x_temp, ord=1) / np.linalg.norm(x, ord=1)  # 稀疏贡献率
+        # sce = np.linalg.norm(x_temp, ord=1) / np.linalg.norm(x, ord=1)  # 稀疏贡献率
 
         # scee = np.linalg.norm(x_temp,ord=1)
         # cer=1.-math.exp(-6.*(scee/sce))
@@ -77,6 +56,16 @@ def l1_ls(A, y):
     return x_sr
 
 
+def lasso_model(A, y):
+    y = np.transpose([y])
+    model = Lasso(alpha=0.01, copy_X=True, fit_intercept=True, max_iter=100000, normalize=False, positive=False,
+                  precompute=False, random_state=None, selection='cyclic', tol=0.0001, warm_start=False)
+    model.fit(A, y)
+    c = (model.coef_)
+    c = c.reshape(-1, 1)
+    return c
+
+
 def cal_accuracy(y_score, y_true):
     c = zip(y_score, y_true)
     c = list(c)
@@ -87,8 +76,8 @@ def cal_accuracy(y_score, y_true):
     y_score = np.asarray(y_score)
     y_true = np.asarray(y_true)
 
-    np.savetxt('/home/tangxq/NDDR-CNN-net/1022/news.txt', y_score, fmt='%f', delimiter=',')
-    np.savetxt('/home/tangxq/NDDR-CNN-net/1022/newtrue1.txt', y_true, fmt='%f', delimiter=',')
+    np.savetxt('news.txt', y_score, fmt='%f', delimiter=',')
+    np.savetxt('newtrue1.txt', y_true, fmt='%f', delimiter=',')
 
     best_acc = 0
     best_th = 0
@@ -135,34 +124,106 @@ def cal_accuracy(y_score, y_true):
         acc = np.mean((y_test == y_true).astype(int))
 
     # 保存的文件改变
-    np.savetxt('/home/tangxq/NDDR-CNN-net/1022/79er_scr_far.txt', farlist, fmt='%f', delimiter=',')
+    np.savetxt('50er_scr_far.txt', farlist, fmt='%f', delimiter=',')
 
-    np.savetxt('/home/tangxq/NDDR-CNN-net/1022/79er_scr_frr.txt', frrlist, fmt='%f', delimiter=',')
+    np.savetxt('50er_scr_frr.txt', frrlist, fmt='%f', delimiter=',')
 
     v = list(map(lambda x: abs(x[0] - x[1]), zip(farlist, frrlist)))
     # auc_ear = metrics.auc(farlist, tpr_ear)
     minindex = v.index(min(v))
     eer = float(frrlist[minindex]) + float(farlist[minindex])
     ear = eer / 2
-
     return best_acc, best_th, ear
 
 
 def eval():
     """Create the model and start the evaluation process."""
+    args = arguments_st_eval()
 
-    embds1 = embds[0:553, :] #字典
-    embds2 = embds[553:, :] #测试
-    train_dict = train_dict[553:] # 图片名称
-    truelable = truelable[0:553] # 字典的label
+    # Create queue coordinator.
+    coord = tf.train.Coordinator()
 
+    # Encode data.
+    with tf.name_scope("create_inputs"):
+        reader = ImageReader(
+            args.data_list,
+            args.data_list_1,
+            input_size=None,
+            coord=coord)
+        image_1, label_1, image_list = reader.dequeue(args.batch_size)
+    # Create network.
+    if args.network == 'resnet_v2_50':
+        net1, end_points_1 = get_embd_st_face(image_1, is_training_bn=False, is_training_dropout=False, reuse=None)
+
+    restore_var = tf.global_variables()
+
+    ear_output = net1
+
+    if args.save_dir is not None and not os.path.exists(args.save_dir):
+        os.makedirs(args.save_dir)
+
+    # Set up tf session and initialize variables.
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    sess = tf.Session(config=config)
+    init = tf.global_variables_initializer()
+
+    sess.run(init)
+    sess.run(tf.local_variables_initializer())
+
+    # Load weights.
+    if args.restore_from is not None:
+        if tf.gfile.IsDirectory(args.restore_from):
+            folder_name = args.restore_from
+            checkpoint_path = tf.train.latest_checkpoint(args.restore_from)
+        else:
+            folder_name = args.restore_from.replace(args.restore_from.split('/')[-1], '')
+            checkpoint_path = args.restore_from
+
+        tf.train.Saver(var_list=restore_var).restore(sess, checkpoint_path)
+        print("Restored model parameters from {}".format(checkpoint_path))
+
+    # Start queue threads.
+    threads = tf.train.start_queue_runners(coord=coord, sess=sess)
+    embds1 = []
+    embds2 = []
+    embdss = []
+    truelable = []
+    train_dict = []
+
+    for step in range(args.num_steps):
+        # tf.get_variable_scope().reuse_variables()
+        imgs_1, ear_out_1, label, img_list = sess.run([image_1, ear_output, label_1, image_list])
+
+        embdss += list(ear_out_1)
+        truelable += list(label)
+        train_dict += list(img_list)
+
+    train_dict = [i[48:] for i in train_dict]
+    embds = np.array(embdss)
+
+    embds1 = embds[0:350, :]
+    embds2 = embds[350:, :]
+    train_dict = train_dict[350:]
+    truelable = truelable[0:350]
+
+    embds1 = embds1 / np.linalg.norm(embds1, axis=1, keepdims=True)
+    embds2 = embds2 / np.linalg.norm(embds2, axis=1, keepdims=True)
+
+    truelable = [int(i) for i in truelable]
+    print('embds1:%', embds1.shape)
+    print('embds2:%', embds2.shape)
+
+    print(truelable)
+
+    print(train_dict)
     Atrain_dict = embds1.transpose()
     Atest_dict = embds2.transpose()
     '''Atrain_dict=embds1
     Atest_dict=embds2'''
     fetrain_dict = {}
     fetest_dict = {}
-    for i, each in enumerate(train_dict): #
+    for i, each in enumerate(train_dict):
         # fetrain_dict[each] = embds1[i]
         fetest_dict[each] = embds2[i]
     labellist = []
@@ -170,10 +231,6 @@ def eval():
         if i not in labellist:
             labellist.append(i)
     # print(labellist)
-    x_sr = []
-    labeltests = []
-    isre_list = []
-    isre_label = []
     all_isre_list = []
     all_isre_label = []
     testlabels = []
@@ -184,17 +241,13 @@ def eval():
     distance = []
     rep = []
     totalcrf = []
-    # print(fetest_dict.keys())
     for pair in pairs:
         id_y = fetest_dict[pair]
         splits = pair.split('/')
         label_test = int(splits[0])
         testlabels.append(label_test)
 
-        # 稀疏表示
         x_sr = l1_ls(Atrain_dict, id_y)
-
-        # x_sr=lasso_model(Atrain_dict,id_y)
         rep.append([])
         rep[k].append(x_sr)
         sce_list = ISRE(Atrain_dict, id_y, x_sr)
@@ -204,15 +257,6 @@ def eval():
         totalcrf.append('[')
         totalcrf.append(totalsce)
         totalcrf.append(']')
-        '''d_index=[]
-        for index,nums in enumerate(truelable):
-            if nums==label_test:
-                d_index.append(index)
-        c =copy.deepcopy(truelable)       
-        for q in range(0,len(c)):
-            c[q]=int(0)
-        for ab in d_index:
-            c[ab]=int(1)'''
 
         d_index = labellist.index(label_test)
         c = copy.deepcopy(labellist)
@@ -227,14 +271,13 @@ def eval():
         n[k].append(c)
         k = k + 1
     print(k)
-    fl = open('/home/tangxq/NDDR-CNN-net/1022/79er_scr_pipeilist.txt', 'w')
-    fd = open('/home/tangxq/NDDR-CNN-net/1022/79er_scr_pipeilabel.txt', 'w')
-    fs = open('/home/tangxq/NDDR-CNN-net/1022/79er_scr_CRF.txt', 'w')
+    fl = open('50er_scr_pipeilist.txt', 'w')
+    fd = open('50er_scr_pipeilabel.txt', 'w')
+    fs = open('50er_scr_CRF.txt', 'w')
     fl.write(str(m))
     fd.write(str(n))
     fs.write(str(totalcrf))
     acc, th, eer = cal_accuracy(all_isre_list, all_isre_label)
-    # print(testlabels)
 
     print('acc:%', acc)
     print('th:%', th)
