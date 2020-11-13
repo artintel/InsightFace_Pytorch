@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # -*- encoding: utf-8 -*-
 '''
 @文件    :myc_extract.py
@@ -49,7 +48,7 @@ def load_dataset(root_dir):
         folder_image_name = os.listdir(path)
         for image_name in (folder_image_name):
             label = image_name.split('-')[0]
-            print("image_name, i:", image_name, label)
+            # print("image_name, i:", image_name, label)
             data_array = cv.imread(root_dir + '/' + label + '/' + image_name)
             # print("array_shape:", np.shape(data_array))
             data.append(data_array)

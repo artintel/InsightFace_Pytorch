@@ -13,11 +13,8 @@ import math
 class face_learner(object):
     def __init__(self, conf, inference=False):
         print(conf)
-        # print("milestones:", conf.milestones) #[12, 15, 18]
         if conf.use_mobilfacenet:
             self.model = MobileFaceNet(conf.embedding_size).to(conf.device)
-            # print('\n')
-            # print("self.model:", self.model.linear.weight)
             print('MobileFaceNet model generated')
         else:
             self.model = Backbone(conf.net_depth, conf.drop_ratio, conf.net_mode).to(conf.device)
@@ -51,28 +48,17 @@ class face_learner(object):
             save_path = conf.model_path
         self.model.load_state_dict(torch.load(save_path / 'model_{}'.format(fixed_str)))
 
-        # state_dict = torch.load(save_path / 'model_{}'.format(fixed_str))
-        # from collections import orderedDict
-        # new_state_dict = OrderedDict()
-        # for k, v in state_dict.items():
-        #     name = k[7:]
-        #     new_state_dict[name] = v
-        # self.model.load_state_dict(new_state_dict)
-
         if not model_only:
             self.head.load_state_dict(torch.load(save_path / 'head_{}'.format(fixed_str)))
             self.optimizer.load_state_dict(torch.load(save_path / 'optimizer_{}'.format(fixed_str)))
 
     def extract(self, conf, carray, tta=False):
-        # print("self.agedb_30.size:", np.shape(self.agedb_30))
-        # carray-self.agedb_30 (12000, 3, 112, 112)
-        # len(carray) = 12000
         self.model.eval()
         idx = 0
         embeddings = np.zeros([len(carray), conf.embedding_size])  # np.zeros(12000, 512)
         with torch.no_grad():
             while idx + conf.batch_size <= len(carray):
-                batch = torch.tensor(carray[idx: idx + conf.batch_size])  # carray[12000, 3, 112, 112]
+                batch = torch.as_tensor(carray[idx: idx + conf.batch_size])  # carray[12000, 3, 112, 112]
                 if tta:
                     # 验证调用的此处
                     # hflip_batch --> 添加了一些强化的技巧
@@ -89,17 +75,13 @@ class face_learner(object):
                     embeddings[idx:idx + conf.batch_size] = self.model(batch.to(conf.device)).cpu()
                 idx += conf.batch_size
             if idx < len(carray):
-                batch = torch.tensor(carray[idx:])
+                batch = torch.as_tensor(carray[idx:])
                 if tta:
                     fliped = hflip_batch(batch)
                     emb_batch = self.model(batch.to(conf.device)) + self.model(fliped.to(conf.device))
                     embeddings[idx:] = l2_norm(emb_batch)
                 else:
                     embeddings[idx:] = self.model(batch.to(conf.device)).cpu()
-        # tpr, fpr, accuracy, best_thresholds = evaluation(embeddings, issame, nrof_folds)
-        # buf = gen_plot(fpr, tpr)
-        # roc_curve = Image.open(buf)
-        # roc_curve_tensor = trans.ToTensor()(roc_curve)
         return embeddings
 
     def find_lr(self,
@@ -162,57 +144,6 @@ class face_learner(object):
             if batch_num > num:
                 plt.plot(log_lrs[10:-5], losses[10:-5])
                 return log_lrs, losses
-
-    def train(self, conf, epochs):
-        self.model.train()
-        # print("self.agedb_30.size:", np.shape(self.agedb_30))
-        # print("self.agedb_30.len:",len(self.agedb_30)) 12000
-
-        # conf.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # self.model = nn.DataParallel(self.model, device_ids=[0, 1])
-        # self.model.to(conf.device)
-
-        running_loss = 0.
-        for e in range(epochs):
-            print('epoch {} started'.format(e))
-            if e == self.milestones[0]:  # 12
-                self.schedule_lr()
-            if e == self.milestones[1]:  # 15
-                self.schedule_lr()
-            if e == self.milestones[2]:  # 18
-                self.schedule_lr()
-            for imgs, labels in tqdm(iter(self.loader)):
-                imgs = imgs.to(conf.device)
-                labels = labels.to(conf.device)
-                self.optimizer.zero_grad()
-                embeddings = self.model(imgs)
-                thetas = self.head(embeddings, labels)
-                loss = conf.ce_loss(thetas, labels)
-                loss.backward()
-                running_loss += loss.item()
-                self.optimizer.step()
-
-                if self.step % self.board_loss_every == 0 and self.step != 0:
-                    loss_board = running_loss / self.board_loss_every
-                    self.writer.add_scalar('train_loss', loss_board, self.step)
-                    running_loss = 0.
-
-                if self.step % self.evaluate_every == 0 and self.step != 0:
-                    # 原型 -> evaluate(self, conf, carray, issame, nrof_folds = 5, tta = False):
-                    accuracy, best_threshold, roc_curve_tensor = self.evaluate(conf, self.agedb_30,
-                                                                               self.agedb_30_issame)
-                    self.board_val('agedb_30', accuracy, best_threshold, roc_curve_tensor)
-                    accuracy, best_threshold, roc_curve_tensor = self.evaluate(conf, self.lfw, self.lfw_issame)
-                    self.board_val('lfw', accuracy, best_threshold, roc_curve_tensor)
-                    accuracy, best_threshold, roc_curve_tensor = self.evaluate(conf, self.cfp_fp, self.cfp_fp_issame)
-                    self.board_val('cfp_fp', accuracy, best_threshold, roc_curve_tensor)
-                    self.model.train()
-                if self.step % self.save_every == 0 and self.step != 0:
-                    self.save_state(conf, accuracy)
-
-                self.step += 1
-
-        self.save_state(conf, accuracy, to_save_folder=True, extra='final')
 
     def schedule_lr(self):
         for params in self.optimizer.param_groups:
